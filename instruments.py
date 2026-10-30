@@ -9,6 +9,7 @@ gi.require_version("Pango", "1.0")
 
 from gi.repository import Adw, GLib, Gtk, Pango  # noqa: E402
 
+from audio import AudioError, TonePreview  # noqa: E402
 from tones import (  # noqa: E402
     CATEGORY_LABELS, Tone, category_label, drum_tones, melodic_tones,
 )
@@ -26,6 +27,14 @@ class InstrumentDialog(Adw.Window):
         self.on_selected = on_selected
         self._tones = drum_tones() if part.drum else melodic_tones()
         self._category = None
+        self._suppress_preview = True
+        self._preview_timeout: int | None = None
+        self.preview: TonePreview | None = None
+        self._preview_error = ""
+        try:
+            self.preview = TonePreview()
+        except Exception as exc:
+            self._preview_error = str(exc)
 
         toolbar = Adw.ToolbarView()
         header = Gtk.HeaderBar()
@@ -37,6 +46,12 @@ class InstrumentDialog(Adw.Window):
         accept.connect("clicked", lambda _b: self._accept_selected())
         header.pack_end(accept)
         self._accept_button = accept
+
+        listen = Gtk.Button.new_from_icon_name("audio-volume-high-symbolic")
+        listen.set_tooltip_text("Ouvir o instrumento selecionado")
+        listen.connect("clicked", lambda _b: self._play_selected_now())
+        header.pack_end(listen)
+        self._listen_button = listen
         toolbar.add_top_bar(header)
 
         content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
@@ -46,8 +61,11 @@ class InstrumentDialog(Adw.Window):
         content.set_margin_end(12)
 
         hint = Gtk.Label(
-            label=("Kit de bateria" if part.drum
-                   else "Tons do CT-X800 — o som da prévia é uma aproximação GM"),
+            label=("Kit de bateria — clique em um nome para ouvir e use "
+                   "'Usar tom' para aplicar"
+                   if part.drum
+                   else "Tons do CT-X800 — clique em um nome para ouvir e use "
+                   "'Usar tom' para aplicar"),
             xalign=0,
         )
         hint.add_css_class("caption")
@@ -79,10 +97,10 @@ class InstrumentDialog(Adw.Window):
 
         self.listbox = Gtk.ListBox()
         self.listbox.set_selection_mode(Gtk.SelectionMode.SINGLE)
+        self.listbox.set_activate_on_single_click(True)
         self.listbox.set_filter_func(self._filter_row)
         self.listbox.connect("row-activated", self._on_row_activated)
-        self.listbox.connect(
-            "row-selected", lambda _list, _row: self._update_accept())
+        self.listbox.connect("row-selected", self._on_row_selected)
         self.rows: list[Gtk.ListBoxRow] = []
         selected_row = None
         for tone in self._tones:
@@ -121,8 +139,19 @@ class InstrumentDialog(Adw.Window):
         self._scroller = scroller
         self._selected_row = selected_row
 
+        self.preview_status = Gtk.Label(
+            label=("Clique em um nome para ouvir" if self.preview is not None
+                   else f"Prévia de áudio indisponível: {self._preview_error}"),
+            xalign=0,
+        )
+        self.preview_status.add_css_class("caption")
+        self.preview_status.add_css_class("dim-label")
+        self.preview_status.set_ellipsize(Pango.EllipsizeMode.END)
+        content.append(self.preview_status)
+
         toolbar.set_content(content)
         self.set_content(toolbar)
+        self.connect("close-request", self._on_close_request)
 
         if selected_row is not None:
             self.listbox.select_row(selected_row)
@@ -132,13 +161,69 @@ class InstrumentDialog(Adw.Window):
     def _scroll_to_selected(self) -> bool:
         row = self._selected_row
         if row is None:
+            self._suppress_preview = False
             return GLib.SOURCE_REMOVE
         self.listbox.select_row(row)
         row.grab_focus()
         allocation = row.get_allocation()
         adjustment = self._scroller.get_vadjustment()
         adjustment.set_value(max(0, allocation.y - 80))
+        self._suppress_preview = False
         return GLib.SOURCE_REMOVE
+
+    def _on_row_selected(self, _listbox, row: Gtk.ListBoxRow | None) -> None:
+        self._update_accept()
+        if self._suppress_preview or row is None or self.preview is None:
+            return
+        tone = getattr(row, "tone", None)
+        if tone is None:
+            return
+        if self._preview_timeout is not None:
+            try:
+                GLib.source_remove(self._preview_timeout)
+            except Exception:
+                pass
+        self._preview_timeout = GLib.timeout_add(
+            120, self._play_preview, tone)
+
+    def _play_preview(self, tone: Tone) -> bool:
+        self._preview_timeout = None
+        if self.preview is None:
+            return GLib.SOURCE_REMOVE
+        self.preview_status.set_text(f"Ouvindo: {tone.label}")
+        try:
+            self.preview.play(tone)
+        except AudioError as exc:
+            self.preview_status.set_text(f"Prévia indisponível: {exc}")
+        return GLib.SOURCE_REMOVE
+
+    def _play_now(self, tone: Tone) -> None:
+        if self._preview_timeout is not None:
+            try:
+                GLib.source_remove(self._preview_timeout)
+            except Exception:
+                pass
+            self._preview_timeout = None
+        self._play_preview(tone)
+
+    def _play_selected_now(self) -> None:
+        row = self.listbox.get_selected_row()
+        if row is None:
+            return
+        tone = getattr(row, "tone", None)
+        if tone is not None:
+            self._play_now(tone)
+
+    def _on_close_request(self, *_args) -> bool:
+        if self._preview_timeout is not None:
+            try:
+                GLib.source_remove(self._preview_timeout)
+            except Exception:
+                pass
+            self._preview_timeout = None
+        if self.preview is not None:
+            self.preview.close()
+        return False
 
     # ------------------------------------------------------------- filtros
     def _invalidate(self) -> None:
@@ -174,7 +259,7 @@ class InstrumentDialog(Adw.Window):
     def _on_row_activated(self, _listbox, row: Gtk.ListBoxRow) -> None:
         tone = getattr(row, "tone", None)
         if tone is not None:
-            self._accept(tone)
+            self._play_now(tone)
 
     def _accept_selected(self) -> None:
         row = self.listbox.get_selected_row()

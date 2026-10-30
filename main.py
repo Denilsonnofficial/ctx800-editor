@@ -763,6 +763,7 @@ class EditorWindow(Adw.ApplicationWindow):
         self._set_status("Alterado. Não esqueça de salvar.")
 
     def _choose_instrument(self) -> None:
+        self._stop_playback()
         number = self.current_part_number
         part = self.project.part(number)
         dialog = InstrumentDialog(
@@ -776,6 +777,7 @@ class EditorWindow(Adw.ApplicationWindow):
         if self._mixer_dialog is not None:
             self._mixer_dialog.present()
             return
+        self._stop_playback()
         dialog = MixerDialog(self, self.project, self._on_mixer_changed)
         self._mixer_dialog = dialog
         dialog.connect("close-request", self._on_mixer_closed)

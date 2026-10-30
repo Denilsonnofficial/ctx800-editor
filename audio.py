@@ -18,6 +18,7 @@ gi.require_version("Gst", "1.0")
 from gi.repository import GLib, Gst  # noqa: E402
 
 from model import PPQ, Project, TICKS_PER_STEP  # noqa: E402
+from tones import Tone  # noqa: E402
 
 SOUNDFONTS = (
     Path("/usr/share/sounds/sf2/default-GM.sf2"),
@@ -355,3 +356,168 @@ class AudioEngine:
             pass
         if self.on_finished:
             self.on_finished()
+
+
+class TonePreview:
+    """Toca uma frase curta para ouvir o timbre escolhido no seletor."""
+
+    def __init__(self) -> None:
+        self.cache_dir = Path(GLib.get_user_cache_dir()) / "ctx800-editor"
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        self._playing = False
+
+        Gst.init(None)
+        self._player = Gst.ElementFactory.make("playbin", "ctx800-tone-preview")
+        if self._player is None:
+            raise AudioError("GStreamer playbin não está disponível.")
+        try:
+            self._player.set_property("volume", 0.8)
+        except Exception:
+            pass
+        self._bus = self._player.get_bus()
+        self._bus.add_signal_watch()
+        self._bus.connect("message", self._on_bus_message)
+
+    # ------------------------------------------------------------- frase
+    @staticmethod
+    def _notes(tone: Tone) -> list[tuple[int, int, int, int]]:
+        """(início, nota, duração, velocidade) em ticks de 1/480."""
+        if tone.drum:
+            return [
+                (0, 35, 120, 115), (0, 42, 120, 70),
+                (240, 42, 120, 60), (480, 38, 120, 100),
+                (480, 42, 120, 70), (720, 42, 120, 60),
+                (960, 35, 120, 105), (960, 42, 120, 70),
+                (1200, 42, 120, 60), (1440, 38, 120, 95),
+                (1440, 42, 120, 70), (1680, 42, 120, 60),
+            ]
+        if tone.category == 5:  # baixo: notas separadas, sem acorde
+            return [(0, 36, 480, 100), (480, 43, 480, 95),
+                    (960, 48, 720, 100)]
+        if tone.category in (4, 10):  # guitarra/synth: arpejo
+            return [(0, 60, 480, 90), (240, 64, 480, 85),
+                    (480, 67, 480, 85), (720, 72, 720, 90)]
+        if tone.category in (7, 8, 9):  # metais/sopro: melodia curta
+            return [(0, 60, 480, 90), (480, 64, 480, 90),
+                    (960, 67, 720, 90)]
+        # piano, strings, pads, órgão etc.: acorde sustentado + brilho
+        return [
+            (0, 60, 1440, 90), (0, 64, 1440, 85),
+            (0, 67, 1440, 85), (960, 72, 480, 75),
+        ]
+
+    def _midi(self, tone: Tone, path: Path) -> None:
+        mid = MidiFile(ticks_per_beat=PPQ)
+        conductor = MidiTrack()
+        mid.tracks.append(conductor)
+        conductor.append(MetaMessage("time_signature", numerator=4,
+                                     denominator=4, time=0))
+        conductor.append(MetaMessage("set_tempo", tempo=bpm2tempo(120),
+                                     time=0))
+        conductor.append(MetaMessage("marker", text="end", time=1920))
+        track = MidiTrack()
+        mid.tracks.append(track)
+        channel = 9 if tone.drum else 0
+        track.append(Message("program_change", channel=channel,
+                             program=tone.program, time=0))
+        track.append(Message("control_change", channel=channel, control=7,
+                             value=100, time=0))
+        track.append(Message("control_change", channel=channel, control=10,
+                             value=64, time=0))
+        track.append(Message("control_change", channel=channel, control=91,
+                             value=40, time=0))
+        events: list[tuple[int, int, Message]] = []
+        for start, pitch, length, velocity in self._notes(tone):
+            events.append((start, 1, Message(
+                "note_on", channel=channel, note=pitch, velocity=velocity)))
+            events.append((start + length, 0, Message(
+                "note_off", channel=channel, note=pitch, velocity=0)))
+        events.sort(key=lambda item: (item[0], item[1]))
+        last = 0
+        for tick, _priority, message in events:
+            track.append(message.copy(time=max(0, tick - last)))
+            last = tick
+        track.append(MetaMessage("end_of_track", time=max(0, 1920 - last)))
+        mid.save(path)
+
+    def render(self, tone: Tone) -> Path:
+        final = self.cache_dir / f"audition_{tone.number:03d}.wav"
+        if final.is_file() and final.stat().st_size > 1024:
+            return final
+        mid_fd, mid_name = tempfile.mkstemp(prefix="audition_", suffix=".mid",
+                                            dir=self.cache_dir)
+        wav_fd, wav_name = tempfile.mkstemp(prefix="audition_", suffix=".raw.wav",
+                                            dir=self.cache_dir)
+        os.close(wav_fd)
+        mid_path = Path(mid_name)
+        raw_wav = Path(wav_name)
+        try:
+            self._midi(tone, mid_path)
+            command = [
+                "fluidsynth", "-ni", "-q", "-g", "0.75", "-r", "44100",
+                "-T", "wav", "-F", str(raw_wav), str(_soundfont()),
+                str(mid_path),
+            ]
+            try:
+                proc = subprocess.run(command, capture_output=True, text=True,
+                                      timeout=30)
+            except FileNotFoundError as exc:
+                raise AudioError(
+                    "FluidSynth não encontrado. Instale o pacote fluidsynth."
+                ) from exc
+            except subprocess.TimeoutExpired as exc:
+                raise AudioError("A prévia do instrumento demorou demais.") from exc
+            if proc.returncode != 0:
+                detail = (proc.stderr or proc.stdout or "").strip().splitlines()
+                last = detail[-1] if detail else "erro desconhecido"
+                raise AudioError(f"FluidSynth falhou: {last}")
+            _trim_wav(raw_wav, final, 2.2)
+        finally:
+            for tmp in (mid_path, raw_wav):
+                try:
+                    tmp.unlink(missing_ok=True)
+                except OSError:
+                    pass
+        self._cleanup()
+        return final
+
+    def _cleanup(self) -> None:
+        try:
+            files = sorted(self.cache_dir.glob("audition_*.wav"),
+                           key=lambda p: p.stat().st_mtime, reverse=True)
+            for old in files[30:]:
+                old.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    # ------------------------------------------------------------- playback
+    def play(self, tone: Tone) -> None:
+        wav = self.render(tone)
+        self.stop()
+        self._player.set_property("uri", wav.resolve().as_uri())
+        if self._player.set_state(Gst.State.PLAYING) == Gst.StateChangeReturn.FAILURE:
+            self._player.set_state(Gst.State.NULL)
+            raise AudioError("Não foi possível tocar a prévia do instrumento.")
+        self._playing = True
+
+    def stop(self) -> None:
+        self._playing = False
+        try:
+            self._player.set_state(Gst.State.NULL)
+        except Exception:
+            pass
+
+    def close(self) -> None:
+        self.stop()
+        try:
+            self._bus.remove_signal_watch()
+        except Exception:
+            pass
+
+    def _on_bus_message(self, _bus, message) -> None:
+        if message.type in (Gst.MessageType.EOS, Gst.MessageType.ERROR):
+            self._playing = False
+            try:
+                self._player.set_state(Gst.State.NULL)
+            except Exception:
+                pass

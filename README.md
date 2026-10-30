@@ -106,7 +106,9 @@ Depois é só procurar por **Editor de Ritmos CT-X800** no menu, ou rodar
 Cada parte guarda um **tom Casio** (número, program change e bank select MSB).
 O AC7 exportado usa exatamente esses valores; no teclado, o timbre é o real.
 
-No seletor dá para buscar pelo nome ou número e filtrar por categoria:
+No seletor dá para buscar pelo nome ou número e filtrar por categoria.
+**Clique em um nome para ouvir uma frase curta** com o timbre; o botão de
+alto-falante repete o tom selecionado e **Usar tom** aplica o instrumento.
 
 ![Seletor de instrumento](docs/instrument-picker.png)
 
