@@ -106,6 +106,10 @@ Depois é só procurar por **Editor de Ritmos CT-X800** no menu, ou rodar
 Cada parte guarda um **tom Casio** (número, program change e bank select MSB).
 O AC7 exportado usa exatamente esses valores; no teclado, o timbre é o real.
 
+No seletor dá para buscar pelo nome ou número e filtrar por categoria:
+
+![Seletor de instrumento](docs/instrument-picker.png)
+
 A prévia no PC é renderizada com um **SoundFont GM** e é uma **aproximação**:
 - o programa GM equivalente é usado para cada tom;
 - as duas partes de bateria são misturadas em um único kit GM na prévia;
