@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Editor de Ritmos CT-X800
+Comment=Crie e exporte ritmos AC7 para o Casio CT-X800
+Exec=ctx800-editor
+Icon=audio-x-generic
+Terminal=false
+Categories=AudioVideo;Audio;Midi;
+Keywords=CT-X800;AC7;ritmo;Casio;editor;bateria;baixo;strings;
+StartupNotify=true

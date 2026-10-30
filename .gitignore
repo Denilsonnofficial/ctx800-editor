@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+*.egg-info/
+
+# Saídas e projetos locais
+saidas/
+ritmos/
+*.AC7
+*.ac7
+*.ctx800.json
+*.mid
+!vendor/**/*.mid
+
+# Sistema
+.DS_Store
